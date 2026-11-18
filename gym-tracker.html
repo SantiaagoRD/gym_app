@@ -119,11 +119,30 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   background: rgba(255,208,85,0.15); color: var(--gold); border: 1px solid rgba(255,208,85,0.3);
   padding: 1px 7px; border-radius: 20px;
 }
-.badge-warn {
-  font-family: 'Bebas Neue', sans-serif; font-size: 11px; letter-spacing: 0.5px;
-  background: rgba(240,180,41,0.12); color: var(--warn); border: 1px solid rgba(240,180,41,0.25);
-  padding: 1px 7px; border-radius: 20px;
+.lights { display: flex; gap: 2px; justify-content: flex-end; margin: -6px -6px 2px 0; }
+.dot {
+  -webkit-appearance: none; appearance: none;
+  border: 0; background: none; padding: 0; margin: 0;
+  width: 28px; height: 28px; min-width: 28px; min-height: 28px; max-width: 28px; max-height: 28px;
+  flex: none; display: flex; align-items: center; justify-content: center;
+  cursor: pointer; line-height: 0;
 }
+.dot .c {
+  display: block; flex: none; box-sizing: border-box;
+  width: 16px; height: 16px; min-width: 16px; min-height: 16px; max-width: 16px; max-height: 16px;
+  aspect-ratio: 1 / 1; border-radius: 50%;
+  border: 2px solid currentColor; opacity: 0.4; transition: opacity 0.15s, background 0.15s;
+}
+.dot.sel .c {
+  opacity: 1; background: currentColor;
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px currentColor;
+}
+.dot.r { color: #e5534b; }
+.dot.y { color: var(--warn); }
+.dot.g { color: #5fd068; }
+.feel-legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin: 0 0 12px 2px; flex-wrap: wrap; }
+.feel-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.feel-legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
 .ex-last {
   text-align: right; flex-shrink: 0;
 }
@@ -323,6 +342,11 @@ canvas { width: 100% !important; display: block; }
       <p id="hoy-date"></p>
     </div>
     <div class="day-scroller" id="day-tabs"></div>
+    <div class="feel-legend">
+      <span><i style="background:#e5534b"></i>Aún no</span>
+      <span><i style="background:var(--warn)"></i>Casi</span>
+      <span><i style="background:#5fd068"></i>Listo para subir</span>
+    </div>
     <div id="exercise-list"></div>
   </div>
 
@@ -567,7 +591,7 @@ const GUIDE = {
 // ═══════════════════════════════════════════════
 // CONFIG — REEMPLAZÁ CON TU URL DE APPS SCRIPT
 // ═══════════════════════════════════════════════
-const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwfqy1ZRQruONroNlaesgez561ImUg36FVneophljaqaXB4H_Wt4-L8HwDOwU-HD1Ef/exec';
+const SCRIPT_URL = 'REEMPLAZA_CON_TU_URL_DE_APPS_SCRIPT';
 
 // ═══════════════════════════════════════════════
 // STATE
@@ -621,7 +645,7 @@ async function loadFromSheets() {
 }
 
 // ── Sheets: guardar un registro ──────────────────
-async function saveToSheets(exId, exName, dayId, date, weightKg) {
+async function saveToSheets(exId, exName, dayId, date, weightKg, feel) {
   if (!state.online || SCRIPT_URL.includes('REEMPLAZA')) return;
   try {
     await fetch(SCRIPT_URL, {
@@ -629,7 +653,7 @@ async function saveToSheets(exId, exName, dayId, date, weightKg) {
       body: JSON.stringify({
         action: 'saveLog',
         exId, exName, dayId, date,
-        weightKg, unit: state.unit
+        weightKg, unit: state.unit, feel: feel || ''
       })
     });
   } catch(e) {
@@ -723,11 +747,37 @@ function addLog(exId, weightKg) {
       if (ex.id === exId) { exName = ex.name; dayId = d.id; }
     });
   });
-  saveToSheets(exId, exName, dayId, today, weightKg);
+  const entry = state.logs[exId][state.logs[exId].length - 1];
+  saveToSheets(exId, exName, dayId, today, weightKg, entry.feel || '');
+}
+
+const FEEL_LABELS = {
+  r: 'Rojo: aún no estoy listo para subir',
+  y: 'Amarillo: casi listo',
+  g: 'Verde: listo para subir'
+};
+
+// El semáforo se guarda en el último registro de peso del ejercicio
+function setFeel(exId, feel) {
+  const logs = state.logs[exId];
+  if (!logs || !logs.length) { toast('Guardá un peso primero'); return; }
+  const entry = logs[logs.length - 1];
+  entry.feel = entry.feel === feel ? '' : feel;
+  saveLocal();
+
+  let exName = exId, dayId = '';
+  DAYS.forEach(d => {
+    (EXERCISES[d.id] || []).forEach(ex => {
+      if (ex.id === exId) { exName = ex.name; dayId = d.id; }
+    });
+  });
+  saveToSheets(exId, exName, dayId, entry.date, entry.weight, entry.feel);
+  renderHoy();
 }
 
 function todayStr() {
-  return new Date().toISOString().slice(0,10);
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
 function fmtDate(str) {
@@ -798,17 +848,20 @@ function renderHoy() {
     const last = getLastLog(ex.id);
     const pr = getPR(ex.id);
     const ispr = last && pr && last.weight === pr;
-    const warn = needsProgression(ex.id);
+    const feel = last ? (last.feel || '') : '';
+    const lights = ['r','y','g'].map(k =>
+      `<button class="dot ${k} ${feel === k ? 'sel' : ''}" onclick="setFeel('${ex.id}','${k}')" aria-label="${FEEL_LABELS[k]}"><span class="c"></span></button>`
+    ).join('');
 
     const badges = [];
     if (ispr) badges.push(`<span class="badge-pr">PR</span>`);
-    if (warn) badges.push(`<span class="badge-warn">↑ Subí el peso</span>`);
 
     const lastW = last ? `
       <div class="ex-last">
+        <div class="lights">${lights}</div>
         <div class="ex-last-weight" style="color:var(--${day.type === 'push' ? 'green' : day.type === 'pull' ? 'blue' : 'orange'})">${formatW(last.weight)}</div>
         <div class="ex-last-date">${fmtDate(last.date)}</div>
-      </div>` : `<div class="ex-last"><div class="ex-last-weight" style="color:var(--muted)">—</div><div class="ex-last-date">sin registros</div></div>`;
+      </div>` : `<div class="ex-last"><div class="lights">${lights}</div><div class="ex-last-weight" style="color:var(--muted)">—</div><div class="ex-last-date">sin registros</div></div>`;
 
     return `
     <div class="ex-card">
